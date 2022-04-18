@@ -9,9 +9,4 @@ day = time_sec // 86400
 hour = time_sec % 86400 // 3600
 min = time_sec % 3600 // 60
 sec = time_sec % 3600 % 60
-#res = datetime(day,hour,min,sec)
-#print("DAYS:HOURS:MIN:SEC")
 print("%d:%d:%d:%d" % (day, hour, min, sec))
-#print (res)
-
-#print (day,':',hour,':',min,':',sec)
