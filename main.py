@@ -9,4 +9,3 @@ hour = time_sec // 3600
 min = time_sec % 3600 // 60
 sec = time_sec % 3600 % 60
 res = datetime.time(hour,min,sec)
-print (res)
