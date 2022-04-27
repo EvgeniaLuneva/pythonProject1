@@ -8,7 +8,9 @@ b_km = int(input('enter second distance:'))
 day = 1
 while a_km < b_km:
     day = day + 1
+    print(day)
     a_km = round(a_km + a_km*0.1,2)
+    print(a_km)
 print('day', day)
 
 
