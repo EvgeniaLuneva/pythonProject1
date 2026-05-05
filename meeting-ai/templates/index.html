@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meeting AI — Конспектирование встреч</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎙️ Meeting AI</h1>
+            <p>Транскрибация и автоматическое конспектирование встреч</p>
+        </header>
+
+        <!-- Upload Zone -->
+        <div class="upload-zone" id="uploadZone">
+            <div class="upload-zone-icon">📁</div>
+            <div class="upload-zone-text">Перетащите файл сюда или нажмите для выбора</div>
+            <div class="upload-zone-hint">Поддерживаются: MP3, WAV, M4A, MP4, WebM, OGG, FLAC (макс. 2GB)</div>
+            <input type="file" id="fileInput" accept=".mp3,.wav,.m4a,.mp4,.webm,.ogg,.flac">
+        </div>
+
+        <!-- Progress Section -->
+        <div class="progress-section" id="progressSection">
+            <div class="progress-header">
+                <span id="progressTitle">Обработка файла...</span>
+                <span id="progressPercent">0%</span>
+            </div>
+            <div class="progress-bar-container">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div class="progress-status" id="progressStatus">Ожидание начала обработки</div>
+        </div>
+
+        <!-- Error Message -->
+        <div class="error-message" id="errorMessage" style="display: none;"></div>
+
+        <!-- Results Section -->
+        <div class="results-section" id="resultsSection">
+            <div class="tabs">
+                <button class="tab active" data-tab="summary">📝 Конспект</button>
+                <button class="tab" data-tab="transcript">🗣 Транскрипт</button>
+            </div>
+
+            <!-- Summary Tab -->
+            <div class="tab-content active" id="summaryTab">
+                <div class="summary-content" id="summaryContent">
+                    <!-- Markdown content will be rendered here -->
+                </div>
+            </div>
+
+            <!-- Transcript Tab -->
+            <div class="tab-content" id="transcriptTab">
+                <table class="transcript-table">
+                    <thead>
+                        <tr>
+                            <th>Спикер</th>
+                            <th>Время</th>
+                            <th>Текст</th>
+                        </tr>
+                    </thead>
+                    <tbody id="transcriptBody">
+                        <!-- Transcript rows will be inserted here -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Actions -->
+            <div class="actions">
+                <a href="#" class="btn btn-primary" id="downloadMd">
+                    ⬇️ Скачать конспект (.md)
+                </a>
+                <a href="#" class="btn btn-secondary" id="downloadJson">
+                    ⬇️ Скачать транскрипт (.json)
+                </a>
+                <button class="btn btn-secondary" onclick="location.reload()">
+                    🔄 Новая встреча
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let currentJobId = null;
+        let pollingInterval = null;
+
+        // Elements
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('fileInput');
+        const progressSection = document.getElementById('progressSection');
+        const progressBar = document.getElementById('progressBar');
+        const progressPercent = document.getElementById('progressPercent');
+        const progressStatus = document.getElementById('progressStatus');
+        const errorMessage = document.getElementById('errorMessage');
+        const resultsSection = document.getElementById('resultsSection');
+        const summaryContent = document.getElementById('summaryContent');
+        const transcriptBody = document.getElementById('transcriptBody');
+        const downloadMd = document.getElementById('downloadMd');
+        const downloadJson = document.getElementById('downloadJson');
+        const tabs = document.querySelectorAll('.tab');
+        const tabContents = document.querySelectorAll('.tab-content');
+
+        // Simple Markdown parser (fallback if offline)
+        function parseMarkdown(md) {
+            if (!md) return '<p>Нет данных</p>';
+            
+            let html = md
+                // Headers
+                .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+                .replace(/^## (.*$)/gim, '<h2>$1</h2>')
+                .replace(/^# (.*$)/gim, '<h1>$1</h1>')
+                // Bold
+                .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
+                // Italic
+                .replace(/\*(.*?)\*/gim, '<em>$1</em>')
+                // Code blocks
+                .replace(/```([\s\S]*?)```/gim, '<pre><code>$1</code></pre>')
+                // Inline code
+                .replace(/`(.*?)`/gim, '<code>$1</code>')
+                // Lists
+                .replace(/^\- (.*$)/gim, '<li>$1</li>')
+                .replace(/^\* (.*$)/gim, '<li>$1</li>')
+                .replace(/^\d+\. (.*$)/gim, '<li>$1</li>')
+                // Line breaks
+                .replace(/\n/gim, '<br>');
+            
+            // Wrap consecutive li elements in ul
+            html = html.replace(/(<li>.*?<\/li>(<br>)?)+/gim, function(match) {
+                return '<ul>' + match.replace(/<br>/g, '') + '</ul>';
+            });
+            
+            return html;
+        }
+
+        // Format time
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        // Upload file
+        async function uploadFile(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Ошибка загрузки');
+                }
+
+                const data = await response.json();
+                currentJobId = data.job_id;
+                
+                // Show progress
+                uploadZone.style.display = 'none';
+                progressSection.classList.add('active');
+                errorMessage.style.display = 'none';
+                
+                // Start polling
+                startPolling();
+                
+            } catch (error) {
+                showError(error.message);
+            }
+        }
+
+        // Poll status
+        async function pollStatus() {
+            if (!currentJobId) return;
+
+            try {
+                const response = await fetch(`/status/${currentJobId}`);
+                
+                if (!response.ok) {
+                    throw new Error('Ошибка получения статуса');
+                }
+
+                const data = await response.json();
+                updateProgress(data);
+
+                if (data.status === 'done') {
+                    stopPolling();
+                    showResults(data);
+                } else if (data.status === 'error') {
+                    stopPolling();
+                    showError(data.error || 'Произошла ошибка при обработке');
+                }
+
+            } catch (error) {
+                showError(error.message);
+                stopPolling();
+            }
+        }
+
+        // Update progress UI
+        function updateProgress(data) {
+            const percent = data.progress || 0;
+            progressBar.style.width = `${percent}%`;
+            progressPercent.textContent = `${percent}%`;
+            progressStatus.textContent = data.status_message || 'Обработка...';
+        }
+
+        // Show results
+        function showResults(data) {
+            progressSection.classList.remove('active');
+            resultsSection.classList.add('active');
+
+            // Render summary
+            summaryContent.innerHTML = parseMarkdown(data.summary || '*Конспект не получен*');
+
+            // Render transcript
+            transcriptBody.innerHTML = '';
+            if (data.transcript && data.transcript.length > 0) {
+                data.transcript.forEach(segment => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td><span class="speaker-badge">${segment.speaker}</span></td>
+                        <td><span class="timestamp">${formatTime(segment.start)} - ${formatTime(segment.end)}</span></td>
+                        <td>${escapeHtml(segment.text)}</td>
+                    `;
+                    transcriptBody.appendChild(row);
+                });
+            } else {
+                transcriptBody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:2rem;">Транскрипт пуст</td></tr>';
+            }
+
+            // Setup download links
+            downloadMd.href = `/download/${currentJobId}/md`;
+            downloadJson.href = `/download/${currentJobId}/json`;
+        }
+
+        // Show error
+        function showError(message) {
+            progressSection.classList.remove('active');
+            errorMessage.textContent = message;
+            errorMessage.style.display = 'block';
+            uploadZone.style.display = 'block';
+        }
+
+        // Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Start polling
+        function startPolling() {
+            pollingInterval = setInterval(pollStatus, 800);
+        }
+
+        // Stop polling
+        function stopPolling() {
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+            }
+        }
+
+        // Tab switching
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabName = tab.dataset.tab;
+                
+                tabs.forEach(t => t.classList.remove('active'));
+                tabContents.forEach(c => c.classList.remove('active'));
+                
+                tab.classList.add('active');
+                document.getElementById(`${tabName}Tab`).classList.add('active');
+            });
+        });
+
+        // Drag & Drop
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                uploadFile(files[0]);
+            }
+        });
+
+        uploadZone.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                uploadFile(e.target.files[0]);
+            }
+        });
+    </script>
+</body>
+</html>
